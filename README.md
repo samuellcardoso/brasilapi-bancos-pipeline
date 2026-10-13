@@ -1,38 +1,94 @@
-# BrasilAPI Bancos Pipeline
+# BrasilAPI Bancos | Pipeline de Engenharia de Dados
 
-## Objetivo
-Pipeline de Engenharia de Dados para extração, armazenamento, transformação, validação e carga de dados de instituições bancárias disponíveis na BrasilAPI
+Pipeline **ETL em Python** que consulta a [BrasilAPI](https://brasilapi.com.br/), preserva os dados originais, realiza transformações e validações com Pandas e atualiza uma tabela no PostgreSQL.
+
+Este projeto demonstra um fluxo de ponta a ponta, com separação de responsabilidades, rastreabilidade por logs e carga repetível com `UPSERT`.
 
 ## Arquitetura
+
 ![Arquitetura do pipeline](./docs/Arquitetura%20BrasilAPI.png)
 
-O pipeline extrai dados da BrasilAPI, preserva a resposta original em JSON na camada `raw`, transforma e valida os dados, salva a versão tratada em CSV na camada `processed` e, por fim, carrega os registros no PostgreSQL.
+```text
+BrasilAPI (GET /api/banks/v1)
+          |
+          v
+   Extracao com Requests
+          |
+          v
+ data_lake/raw/bancos.json
+          |
+          v
+ Transformacao com Pandas
+          |
+          v
+   Validacao dos dados
+          |
+          v
+data_lake/processed/bancos.csv
+          |
+          v
+     Carga com Psycopg
+          |
+          v
+ PostgreSQL (dim_bancos)
+```
 
-## Fluxo do Pipeline
-1. Extração dos dados da BrasilAPI
-2. Armazenamento do JSON original na camada `raw`
-3. Transformação e padronização dos dados com Pandas
-4. Validação dos dados tratados
-5. Armazenamento do CSV tratado na camada `processed`
-6. Carga dos dados no PostgreSQL
-7. Inserção e atualização dos registros utilizando `UPSERT` com base no `ispb`
+O `main.py` coordena todas as etapas. O armazenamento em `raw` e `processed` é **local**; o projeto não utiliza serviços AWS nesta versão.
 
-## Decisões Técnicas
-- O JSON original é preservado na camada `raw`
-- A camada `processed` contém os dados tratados e padronizados
-- O campo `ispb` é tratado como texto por representar um identificador
-- Valores ausentes em `code` são preservados como `NULL`
-- O PostgreSQL utiliza `UPSERT` com `ON CONFLICT` para evitar duplicidade de registros
-- Credenciais do banco são armazenadas em variáveis de ambiente
+## Fonte de dados
 
-## Estrutura das Pastas
+- **Origem:** [BrasilAPI — Bancos](https://brasilapi.com.br/docs#tag/BANKS)
+- **Endpoint:** `https://brasilapi.com.br/api/banks/v1`
+- **Formato de origem:** JSON
+- **Destino:** tabela `dim_bancos` no PostgreSQL
+
+A extração é automática durante a execução do pipeline, portanto não é necessário baixar o JSON manualmente.
+
+## Fluxo do pipeline
+
+1. **Extract:** requisita os bancos à API e salva a resposta em `data_lake/raw/bancos.json`.
+2. **Transform:** seleciona as colunas relevantes, remove linhas inteiramente duplicadas, padroniza textos e ajusta os tipos.
+3. **Validate:** verifica estrutura, campos obrigatórios, unicidade de `ispb` e tipos esperados.
+4. **Processed:** salva os dados validados em `data_lake/processed/bancos.csv`.
+5. **Load:** cria a tabela `dim_bancos` caso ela não exista e insere/atualiza os registros no PostgreSQL.
+
+Os módulos registram informações de execução e erros por meio de `logging`.
+
+## Modelo de dados
+
+| Coluna | Tipo no PostgreSQL | Descrição |
+| --- | --- | --- |
+| `id` | `SERIAL PRIMARY KEY` | Chave interna da tabela |
+| `ispb` | `VARCHAR(30) UNIQUE NOT NULL` | Identificador do banco e chave de conflito |
+| `name` | `VARCHAR(150) NOT NULL` | Nome abreviado, padronizado |
+| `code` | `INT NULL` | Código bancário, quando informado pela API |
+| `full_name` | `VARCHAR(255) NOT NULL` | Nome completo, padronizado |
+
+**Granularidade:** cada linha representa uma instituição bancária identificada pelo `ispb`.
+
+### Decisões técnicas
+
+- O JSON original é preservado na camada `raw`; o CSV padronizado é salvo na `processed`.
+- O `ispb` é tratado como **texto**, pois é um identificador, não uma medida numérica.
+- O campo `code` admite valores nulos.
+- A validação impede a carga de dados incompletos, duplicados ou com tipos incompatíveis.
+- O `UPSERT` com `ON CONFLICT (ispb)` atualiza registros existentes, sem inserir outra linha com o mesmo identificador.
+- As credenciais são lidas de variáveis de ambiente, sem senhas no código.
+- As etapas estão separadas em módulos e são orquestradas pelo `main.py`.
+
+## Estrutura do projeto
+
 ```text
 brasilapi-bancos-pipeline/
 ├── data_lake/
 │   ├── raw/
+│   │   └── bancos.json
 │   └── processed/
+│       └── bancos.csv
 ├── docs/
 │   └── Arquitetura BrasilAPI.png
+├── tests/
+│   └── test_validate.py
 ├── db_connection.py
 ├── extract.py
 ├── load.py
@@ -42,45 +98,108 @@ brasilapi-bancos-pipeline/
 ├── validate.py
 ├── requirements.txt
 ├── .env.example
+├── .gitignore
 └── README.md
 ```
 
 ## Tecnologias
-- Python
-- Pandas
-- PostgreSQL
-- Psycopg
-- Requests
-- python-dotenv
+
+**Python · Pandas · Requests · Psycopg 3 · PostgreSQL · python-dotenv · Git/GitHub**
+
+Também são utilizados módulos da biblioteca padrão do Python, como `logging`, `json` e `os`.
 
 ## Como executar
-1. Clone o repositório 
+
+**Pré-requisitos:** Python, PostgreSQL instalado e acesso à internet para consultar a BrasilAPI.
+
+**1. Clonar o projeto**
+
 ```bash
-git clone git@github.com:samuellcardoso/brasilapi-bancos-pipeline.git
+git clone https://github.com/samuellcardoso/brasilapi-bancos-pipeline.git
+cd brasilapi-bancos-pipeline
 ```
-2. Crie e ative o ambiente virtual
+
+**2. Preparar o ambiente Python**
+
 ```bash
 python -m venv .venv
-.venv/Scripts/activate
 ```
-3. Instale as dependências
+
+No Windows (PowerShell):
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+No Linux ou macOS:
+
+```bash
+source .venv/bin/activate
+```
+
+Depois, instalar as dependências:
+
 ```bash
 pip install -r requirements.txt
 ```
-4. Crie um arquivo `.env` com base no `.env.example`
 
-5. Crie o banco de dados no PostgreSQL
+**3. Configurar o PostgreSQL**
+
+Crie o banco de dados (por exemplo, no pgAdmin ou no `psql`):
+
 ```sql
 CREATE DATABASE banco;
 ```
-6. Execute o pipeline
+
+Copie `.env.example` para um novo arquivo `.env` e preencha com seus dados locais:
+
+```dotenv
+DB_NAME=banco
+DB_USER=seu_usuario
+DB_PASSWORD=sua_senha
+DB_HOST=localhost
+DB_PORT=5432
+```
+
+**Não envie o `.env` com credenciais reais para o GitHub.** A tabela `dim_bancos` é criada automaticamente na primeira execução.
+
+**4. Executar o pipeline**
+
 ```bash
 python main.py
 ```
 
-## Melhorias Futuras
-- Automatizar a execução do pipeline
-- Adicionar testes automáticos
-- Utilizar Docker
-- Migrar o armazenamento para AWS
-- Adicionar monitoramento das execuções
+Ao concluir, confira os arquivos das camadas `raw` e `processed`. Para verificar a carga no banco:
+
+```sql
+SELECT COUNT(*) FROM dim_bancos;
+
+SELECT ispb, name, code, full_name
+FROM dim_bancos
+ORDER BY name
+LIMIT 10;
+```
+
+Reexecutar o pipeline deve atualizar os bancos já cadastrados com base em `ispb`, sem duplicá-los.
+
+**5. Executar os testes unitários de validação**
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Esses testes não exigem conexão com a API nem com PostgreSQL.
+
+## Limites e próximos passos
+
+Este é um projeto introdutório de ETL, com execução manual e persistência em PostgreSQL local. Possíveis evoluções:
+
+- Agendar a execução do pipeline.
+- Aumentar a cobertura de testes, incluindo integração com banco e API.
+- Adicionar métricas de execução e monitoramento.
+- Utilizar Docker para facilitar a instalação.
+- Experimentar armazenamento e processamento em nuvem (AWS).
+
+---
+
+**Propósito no portfólio:** demonstrar fundamentos de integração com APIs, Data Lake local, qualidade dos dados e carga idempotente em banco relacional.
